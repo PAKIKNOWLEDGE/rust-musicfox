@@ -64,3 +64,30 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_roundtrip() {
+        let cfg = Config {
+            volume: 0.55,
+            play_mode: "shuffle".into(),
+            br: 320000,
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(back.volume, 0.55);
+        assert_eq!(back.play_mode, "shuffle");
+        assert_eq!(back.br, 320000);
+    }
+
+    #[test]
+    fn default_values() {
+        let cfg = Config::default();
+        assert_eq!(cfg.volume, 0.8);
+        assert_eq!(cfg.play_mode, "list");
+        assert_eq!(cfg.br, 128000);
+    }
+}

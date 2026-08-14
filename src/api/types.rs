@@ -260,3 +260,40 @@ impl ApiError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn personalized_play_count_float() {
+        // The API sends playCount as scientific-notation floats; this must
+        // not break deserialization (regression for the 3.93E7 bug).
+        let json =
+            r#"{"code":200,"result":[{"id":1,"name":"x","picUrl":"u","playCount":3.9326708E7}]}"#;
+        let resp: PersonalizedResp = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.code, 200);
+        assert_eq!(resp.result.len(), 1);
+        assert_eq!(resp.result[0].play_count, Some(3.9326708E7));
+    }
+
+    #[test]
+    fn song_aliases_short_keys() {
+        // Search results use shortened keys ar/al/dt.
+        let json = r#"{"id":1,"name":"s","ar":[{"id":9,"name":"a"}],"al":{"id":8,"name":"alb"},"dt":123456,"alia":["x"],"fee":1}"#;
+        let s: Song = serde_json::from_str(json).unwrap();
+        assert_eq!(s.artist_names(), "a");
+        assert_eq!(s.album_name(), "alb");
+        assert_eq!(s.duration_secs(), 123);
+    }
+
+    #[test]
+    fn song_full_keys() {
+        // Playlist detail uses full keys artists/album.
+        let json =
+            r#"{"id":1,"name":"s","artists":[{"id":9,"name":"a"}],"album":{"id":8,"name":"alb"}}"#;
+        let s: Song = serde_json::from_str(json).unwrap();
+        assert_eq!(s.artist_names(), "a");
+        assert_eq!(s.album_name(), "alb");
+    }
+}
