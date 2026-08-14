@@ -2,6 +2,7 @@
 //! go-musicfox).
 
 pub mod api;
+pub mod config;
 pub mod lyric;
 pub mod player;
 pub mod ui;

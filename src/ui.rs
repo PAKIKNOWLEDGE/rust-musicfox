@@ -65,6 +65,8 @@ enum View {
     PlaylistDetail { id: i64, name: String },
     Search,
     Player,
+    Queue,
+    Help,
     Login,
 }
 
@@ -136,6 +138,7 @@ pub struct App {
     view: View,
     back_stack: Vec<View>,
 
+    cfg: crate::config::Config,
     logged_in: bool,
 
     // main menu
@@ -161,6 +164,7 @@ pub struct App {
     // player
     queue: Vec<Song>,
     queue_index: usize,
+    queue_cursor: usize,
     current: Option<Song>,
     lyrics: Vec<LyricLine>,
     tlyric: Vec<LyricLine>,
@@ -183,8 +187,16 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(client: NeteaseClient, player: Player) -> Result<Self> {
+    pub fn new(client: NeteaseClient, mut player: Player) -> Result<Self> {
         let logged_in = client.is_logged_in();
+        let cfg = crate::config::Config::load().unwrap_or_default();
+        player.set_volume(cfg.volume);
+        let play_mode = match cfg.play_mode.as_str() {
+            "single" => PlayMode::SingleLoop,
+            "shuffle" => PlayMode::Shuffle,
+            "sequence" => PlayMode::Sequence,
+            _ => PlayMode::ListLoop,
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         Ok(App {
             client: Arc::new(Mutex::new(client)),
@@ -193,6 +205,7 @@ impl App {
             rx: Some(rx),
             view: View::Main,
             back_stack: Vec::new(),
+            cfg,
             logged_in,
             main_index: 0,
             playlists: Vec::new(),
@@ -208,12 +221,13 @@ impl App {
             search_loading: false,
             queue: Vec::new(),
             queue_index: 0,
+            queue_cursor: 0,
             current: None,
             lyrics: Vec::new(),
             tlyric: Vec::new(),
             lyric_index: 0,
             current_song_id: 0,
-            play_mode: PlayMode::ListLoop,
+            play_mode,
             loading_next: false,
             qr_unikey: None,
             qr_string: None,
@@ -489,6 +503,7 @@ impl App {
         self.lyric_index = 0;
         let client = self.client.clone();
         let tx = self.tx.clone();
+        let br = self.cfg.br;
         tokio::spawn(async move {
             // lyrics (fire-and-forget)
             {
@@ -513,7 +528,7 @@ impl App {
             let result = async {
                 let client = client.lock().await;
                 let http = client.http();
-                let url = client.song_url(song.id, SONG_BR).await?;
+                let url = client.song_url(song.id, br).await?;
                 let resp = http.get(&url).send().await?;
                 let status = resp.status();
                 let bytes = resp.bytes().await?;
@@ -593,7 +608,20 @@ impl App {
 
     fn toggle_play_mode(&mut self) {
         self.play_mode = self.play_mode.next();
+        self.cfg.play_mode = match self.play_mode {
+            PlayMode::ListLoop => "list",
+            PlayMode::SingleLoop => "single",
+            PlayMode::Shuffle => "shuffle",
+            PlayMode::Sequence => "sequence",
+        }
+        .into();
+        self.cfg.save();
         self.set_status(format!("播放模式: {}", self.play_mode.label()));
+    }
+
+    fn persist_volume(&mut self) {
+        self.cfg.volume = self.player.volume();
+        self.cfg.save();
     }
 
     // ---- message handling ----
@@ -699,6 +727,12 @@ impl App {
             View::Main => self.handle_main_key(key),
             View::PlaylistList => self.handle_playlist_list_key(key),
             View::PlaylistDetail { .. } => self.handle_playlist_key(key),
+            View::Queue => self.handle_queue_key(key),
+            View::Help if key.code == KeyCode::Esc => {
+                self.pop_view();
+                Ok(())
+            }
+            View::Help => Ok(()),
         }
     }
 
@@ -735,6 +769,9 @@ impl App {
                 } else {
                     self.pop_view();
                 }
+            }
+            KeyCode::Char('?') => {
+                self.push_view(View::Help);
             }
             _ => {}
         }
@@ -850,9 +887,41 @@ impl App {
                 let pos = self.player.position();
                 self.player.seek(pos.saturating_sub(Duration::from_secs(5)));
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => self.player.volume_up(),
-            KeyCode::Char('-') => self.player.volume_down(),
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                self.player.volume_up();
+                self.persist_volume();
+            }
+            KeyCode::Char('-') => {
+                self.player.volume_down();
+                self.persist_volume();
+            }
             KeyCode::Char('m') => self.toggle_play_mode(),
+            KeyCode::Char('v') => {
+                self.queue_cursor = self.queue_index;
+                self.push_view(View::Queue);
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.pop_view();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_queue_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.queue_cursor = self.queue_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.queue_cursor = (self.queue_cursor + 1).min(self.queue.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if !self.queue.is_empty() {
+                    self.queue_index = self.queue_cursor.min(self.queue.len() - 1);
+                    self.play_current();
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.pop_view();
             }
@@ -974,6 +1043,8 @@ impl App {
             View::PlaylistDetail { .. } => self.render_playlist(frame, areas[0]),
             View::Search => self.render_search(frame, areas[0]),
             View::Player => self.render_player(frame, areas[0]),
+            View::Queue => self.render_queue(frame, areas[0]),
+            View::Help => self.render_help(frame, areas[0]),
             View::Login => self.render_login(frame, areas[0]),
         }
         let status = Paragraph::new(Line::from(Span::styled(
@@ -1241,6 +1312,104 @@ impl App {
             ))
             .style(Style::default().fg(Color::DarkGray)),
             chunks[3],
+        );
+    }
+
+    fn render_queue(&mut self, frame: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = self
+            .queue
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mark = if i == self.queue_index { "▶ " } else { "   " };
+                ListItem::new(Line::from(vec![
+                    Span::styled(mark, Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format!("{:>3}. ", i + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(s.name.clone()),
+                    Span::styled(
+                        format!("  -  {}", s.artist_names()),
+                        Style::default().fg(Color::Blue),
+                    ),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("播放队列 ({})", self.queue.len())),
+            )
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .highlight_symbol("> ");
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.queue_cursor));
+        frame.render_stateful_widget(list, area, &mut state);
+        frame.render_widget(
+            Paragraph::new(Line::from("Enter 播放选中  Esc 返回"))
+                .style(Style::default().fg(Color::DarkGray)),
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(area)[1],
+        );
+    }
+
+    fn render_help(&mut self, frame: &mut Frame, area: Rect) {
+        let text = vec![
+            Line::from(Span::styled(
+                "全局",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  ↑/↓ 或 k/j    移动光标"),
+            Line::from("  Enter           进入 / 播放"),
+            Line::from("  Esc             返回上一页"),
+            Line::from("  Ctrl+C          退出"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "主菜单",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  ?               帮助"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "播放页",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  空格            播放 / 暂停"),
+            Line::from("  s               停止"),
+            Line::from("  n / →           下一首"),
+            Line::from("  p / ←           上一首"),
+            Line::from("  ↑ / ↓           快进 / 快退 5 秒"),
+            Line::from("  + / -           音量加减"),
+            Line::from("  m               播放模式 (列表循环/单曲/随机/顺序)"),
+            Line::from("  v               播放队列"),
+            Line::from("  q / Esc         返回"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "搜索页",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  /               进入输入"),
+            Line::from("  Enter           搜索"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "登录页",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  q               扫码模式"),
+            Line::from("  c               Cookie 模式"),
+            Line::from("  r               刷新二维码 / 读取 cookie"),
+            Line::from(""),
+            Line::from("按 Esc 返回"),
+        ];
+        frame.render_widget(
+            Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title("帮助"))
+                .wrap(Wrap { trim: true }),
+            area,
         );
     }
 
