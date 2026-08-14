@@ -916,11 +916,9 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.queue_cursor = (self.queue_cursor + 1).min(self.queue.len().saturating_sub(1));
             }
-            KeyCode::Enter => {
-                if !self.queue.is_empty() {
-                    self.queue_index = self.queue_cursor.min(self.queue.len() - 1);
-                    self.play_current();
-                }
+            KeyCode::Enter if !self.queue.is_empty() => {
+                self.queue_index = self.queue_cursor.min(self.queue.len() - 1);
+                self.play_current();
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.pop_view();
