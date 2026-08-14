@@ -101,10 +101,13 @@ fn main() {
             Err(e) => println!("playlist FAILED: {e}"),
         }
 
-        // 7) QR (expected to fail on networks that block weapi)
+        // 7) QR key (new endpoint + full browser headers, mirroring go-musicfox)
         match client.qr_key().await {
-            Ok(key) => println!("qr_key OK: {key}"),
-            Err(e) => println!("qr_key (weapi) FAILED as expected on blocked networks: {e}"),
+            Ok(key) => {
+                println!("qr_key OK: {key}");
+                println!("qr_url: {}", client.qr_url(&key));
+            }
+            Err(e) => println!("qr_key FAILED: {e}"),
         }
     });
 }

@@ -526,7 +526,7 @@ impl App {
             let result = async {
                 let client = client.lock().await;
                 let key = client.qr_key().await?;
-                let url = client.qr_create(&key).await?;
+                let url = client.qr_url(&key);
                 Ok::<_, anyhow::Error>((key, url))
             }
             .await;
@@ -543,7 +543,10 @@ impl App {
                     let _ = tx.send(Msg::QrKeyReady { key, qr });
                 }
                 Err(e) => {
-                    let _ = tx.send(Msg::OpError(format!("获取二维码失败: {}", e)));
+                    let _ = tx.send(Msg::OpError(format!(
+                        "获取二维码失败（当前网络 weapi 可能被风控）: {}。请按 c 用 Cookie 登录，或更换网络后按 r 重试",
+                        e
+                    )));
                 }
             }
         });

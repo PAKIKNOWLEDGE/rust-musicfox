@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use reqwest::header::{COOKIE, REFERER};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use types::*;
 
@@ -159,54 +159,17 @@ impl NeteaseClient {
         Ok(body)
     }
 
-    /// weapi POST (used for QR login; some networks block these).
-    async fn weapi_post(&self, path: &str, data: Value) -> Result<Value> {
-        let (params, enc_sec_key) = weapi::weapi_params(&data);
-        let resp = self
-            .http
-            .post(format!("{}{}", BASE, path))
-            .header(REFERER, BASE)
-            .header(COOKIE, self.cookie_header())
-            .form(&[
-                ("params", params.as_str()),
-                ("encSecKey", enc_sec_key.as_str()),
-            ])
-            .send()
-            .await
-            .context("weapi request failed")?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .with_context(|| format!("read response from {} (status {})", path, status))?;
-        if text.is_empty() {
-            return Err(anyhow!(
-                "empty response from {} (status {}), 可能被风控拦截",
-                path,
-                status
-            ));
-        }
-        let body: Value = serde_json::from_str(&text)
-            .with_context(|| format!("parse response from {} (status {})", path, status))?;
-        self.check_code(&body)?;
-        Ok(body)
-    }
-
-    fn timestamp() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
-
     // ---- login ----
+    //
+    // QR login uses the PLAINTEXT endpoints under /api/ (unlike go-musicfox's
+    // weapi variants). The /weapi/ paths are blocked by anti-bot on many
+    // networks (empty 200 responses), while /api/ works everywhere — no weapi
+    // encryption and no TLS fingerprint impersonation needed.
 
+    /// Request a QR login unikey.
     pub async fn qr_key(&self) -> Result<String> {
         let body = self
-            .weapi_post(
-                "/weapi/login/qr/key",
-                json!({"timestamp": Self::timestamp()}),
-            )
+            .api_get("/api/login/qrcode/unikey?type=1&noCheckToken=true")
             .await?;
         let resp: QrKeyResp = serde_json::from_value(body).context("parse qr key response")?;
         if resp.unikey.is_empty() {
@@ -215,28 +178,18 @@ impl NeteaseClient {
         Ok(resp.unikey)
     }
 
-    pub async fn qr_create(&self, key: &str) -> Result<String> {
-        let body = self
-            .weapi_post(
-                "/weapi/login/qr/create",
-                json!({"key": key, "qrcodeWidth": 400, "timestamp": Self::timestamp()}),
-            )
-            .await?;
-        let resp: QrCreateResp =
-            serde_json::from_value(body).context("parse qr create response")?;
-        if resp.qrurl.is_empty() {
-            return Err(anyhow!("empty qr url"));
-        }
-        Ok(resp.qrurl)
+    /// Build the scan URL for a unikey.
+    pub fn qr_url(&self, key: &str) -> String {
+        format!("http://music.163.com/login?codekey={}", key)
     }
 
     /// Poll QR status. On success (803) the session cookies are captured.
     pub async fn qr_check(&mut self, key: &str) -> Result<QrCheckResp> {
         let body = self
-            .weapi_post(
-                "/weapi/login/qr/check",
-                json!({"key": key, "timestamp": Self::timestamp()}),
-            )
+            .api_get(&format!(
+                "/api/login/qrcode/client/login?type=1&noCheckToken=true&key={}",
+                urlencoding::encode(key)
+            ))
             .await?;
         let resp: QrCheckResp = serde_json::from_value(body).context("parse qr check response")?;
         if resp.code == 803 {
