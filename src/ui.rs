@@ -777,6 +777,16 @@ impl App {
         self.cfg.save();
     }
 
+    fn toggle_bitrate(&mut self) {
+        self.cfg.br = if self.cfg.br <= 128000 {
+            320000
+        } else {
+            128000
+        };
+        self.cfg.save();
+        self.set_status(format!("音质: {}kbps", self.cfg.br / 1000));
+    }
+
     // ---- message handling ----
 
     fn handle_msg(&mut self, msg: Msg) {
@@ -1126,6 +1136,7 @@ impl App {
                 self.persist_volume();
             }
             KeyCode::Char('m') => self.toggle_play_mode(),
+            KeyCode::Char('b') => self.toggle_bitrate(),
             KeyCode::Char('d') => self.download_current(),
             KeyCode::Char('v') => {
                 self.queue_cursor = self.queue_index;
@@ -1611,7 +1622,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(Line::from(
-                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  m 模式  d 下载  v 队列  q 返回",
+                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  m 模式  b 音质  d 下载  v 队列  q 返回",
             ))
             .style(Style::default().fg(Color::DarkGray)),
             chunks[3],
@@ -1694,6 +1705,7 @@ impl App {
             Line::from("  ↑ / ↓           快进 / 快退 5 秒"),
             Line::from("  + / -           音量加减"),
             Line::from("  m               播放模式 (列表循环/单曲/随机/顺序)"),
+            Line::from("  b               音质切换 (128k/320k)"),
             Line::from("  d               下载当前歌曲"),
             Line::from("  v               播放队列"),
             Line::from("  q / Esc         返回"),

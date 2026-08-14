@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let player = player::Player::new()?;
+    let player = player::Player::new();
     let app = ui::App::new(client, player)?;
     app.run().await
 }

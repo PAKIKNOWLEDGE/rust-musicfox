@@ -37,13 +37,11 @@ fn main() {
             }
         };
         println!("downloaded {} KB", bytes.len() / 1024);
-        let mut player = match rust_musicfox::player::Player::new() {
-            Ok(p) => p,
-            Err(e) => {
-                println!("no audio device: {e}");
-                return;
-            }
-        };
+        let mut player = rust_musicfox::player::Player::new();
+        if !player.has_device() {
+            println!("no audio device available");
+            return;
+        }
         match player.play_bytes(bytes) {
             Ok(()) => println!("playback started OK"),
             Err(e) => {
