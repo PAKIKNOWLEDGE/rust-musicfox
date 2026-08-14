@@ -1,6 +1,8 @@
 # rust-musicfox
 
 [![CI](https://github.com/PAKIKNOWLEDGE/rust-musicfox/actions/workflows/ci.yml/badge.svg)](https://github.com/PAKIKNOWLEDGE/rust-musicfox/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PAKIKNOWLEDGE/rust-musicfox?label=release)](https://github.com/PAKIKNOWLEDGE/rust-musicfox/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 网易云音乐终端客户端（TUI），使用 Rust 编写。这是 [go-musicfox](https://github.com/go-musicfox/go-musicfox) 的 Rust 重写版本。
 
@@ -32,9 +34,24 @@
 - [ ] 桌面歌词、MPRIS / 远程控制、Last.fm
 - [ ] 主题自定义
 
-## 构建
+## 安装
 
-需要 Rust 1.75+（`cargo`）。
+### 直接下载（推荐）
+
+从 [Releases](https://github.com/PAKIKNOWLEDGE/rust-musicfox/releases) 下载对应平台的二进制，解压后直接运行：
+
+```bash
+# Linux / macOS
+chmod +x rust-musicfox-Linux   # 或 rust-musicfox-macOS
+./rust-musicfox-Linux
+
+# Windows
+# 运行 rust-musicfox-Windows.exe（在终端中）
+```
+
+### 源码构建
+
+需要 Rust stable（推荐最新版）：
 
 ```bash
 cargo build --release
@@ -47,9 +64,7 @@ cargo build --release
 cargo run
 ```
 
-## 安装
-
-### Nix（推荐）
+### Nix
 
 可复现的源码构建（flake）：
 
@@ -123,9 +138,9 @@ UI 线程模型：单主任务持有播放器并负责渲染；按键事件由�
 ## 与 go-musicfox 的差异
 
 - 播放引擎：rodio（纯 Rust）替代 beep + 平台引擎；不支持 DLNA / MPD / MPV / 桌面歌词
-- 登录：仅扫码登录（weapi），未实现网页 WebView 登录
-- 存储：JSON cookie 替代 BoltDB
-- 未实现：远程控制（MPRIS 等）、频谱、主题系统
+- 登录：支持扫码（weapi）与 Cookie 粘贴两种方式，未实现网页 WebView 登录
+- 存储：JSON cookie + TOML 配置替代 BoltDB
+- 未实现：远程控制（MPRIS 等）、频谱、主题系统、Last.fm 同步
 
 ## License
 
