@@ -8,15 +8,18 @@
 
 ## 功能
 
-- [x] 扫码登录（网易云音乐 App 扫码，cookie 持久化到配置文件目录）
+- [x] 扫码登录 + Cookie 粘贴登录（部分网络 weapi 被风控时使用 Cookie 模式）
 - [x] 每日推荐（需登录）
 - [x] 推荐歌单
 - [x] 搜索（歌曲）
-- [x] 歌单详情 / 顺序播放队列（自动连播）
+- [x] 歌单详情 / 播放队列（自动连播，`v` 查看队列）
+- [x] 播放模式：列表循环 / 单曲循环 / 随机 / 顺序（`m` 切换）
 - [x] 播放控制：播放/暂停/停止/上一首/下一首/快进快退/音量
-- [x] LRC 歌词同步显示
+- [x] LRC 歌词同步显示 + 翻译歌词
 - [x] 退出登录
-- [ ] 歌词翻译、卡拉 OK 歌词（YRC）
+- [x] 配置持久化（音量、播放模式、码率，存于 `config.toml`）
+- [x] 帮助页（`?`）
+- [ ] 歌词卡拉 OK 模式（YRC）
 - [ ] 歌单广场 / 榜单
 - [ ] 私人 FM
 - [ ] 桌面歌词、MPRIS / 远程控制、Last.fm
@@ -71,26 +74,35 @@ nix profile install ./result
 | `p` / `←` | 上一首 |
 | `↑` / `↓`（播放页） | 快进 / 快退 5 秒 |
 | `+` / `-` | 音量加减 |
+| `m` | 切换播放模式（列表循环/单曲/随机/顺序） |
+| `v` | 播放队列 |
+| `?` | 帮助 |
 | `/`（搜索页） | 进入搜索输入 |
-| `r`（登录页） | 刷新二维码 |
+| `r`（登录页） | 刷新二维码 / 读取 cookie |
 | `Ctrl+C` | 退出 |
+
+完整快捷键见应用内帮助页（`?`）。
 
 ## 配置与数据
 
 - 配置文件目录：`<config>/rust-musicfox/`（Linux: `~/.config/rust-musicfox/`，
   macOS: `~/Library/Application Support/rust-musicfox/`，
   Windows: `%APPDATA%\rust-musicfox\`）
-- 登录 cookie 保存在 `cookies.json`，登录状态重启后保留
+- `cookies.json` — 登录 cookie，登录状态重启后保留
+- `cookie.txt` — Cookie 登录时手动写入的 MUSIC_U cookie（应用内按 `r` 读取）
+- `config.toml` — 音量、播放模式、码率等设置
 
 ## 架构
 
 ```
 src/
-├── main.rs      # 入口，tokio runtime
+├── main.rs      # 入口（--cookie 参数、--help），tokio runtime
+├── lib.rs       # 库 crate（bin 与 examples 共用）
 ├── api/         # 网易云 API 客户端
-│   ├── mod.rs   # 请求封装（QR 登录、搜索、歌单、歌曲 URL、歌词）
+│   ├── mod.rs   # 请求封装（QR/ Cookie 登录、搜索、歌单、歌曲 URL、歌词）
 │   ├── types.rs # 响应结构
-│   └── weapi.rs # weapi 加密（AES-128-CBC + RSA）
+│   └── weapi.rs # weapi 加密（AES-128-CBC + 无填充 RSA，对齐 Go 参考实现）
+├── config.rs    # 配置持久化（TOML）
 ├── player.rs    # rodio 播放引擎
 ├── lyric.rs     # LRC 歌词解析
 └── ui.rs        # TUI：状态机 + 事件循环 + 渲染
