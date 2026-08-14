@@ -17,6 +17,13 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          # rodio -> cpal needs ALSA on Linux
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.pkg-config
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.alsa-lib
+          ];
           meta = {
             description = "NetEase Cloud Music TUI client written in Rust";
             license = pkgs.lib.licenses.mit;

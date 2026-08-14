@@ -31,6 +31,34 @@ enum LoginMode {
     Cookie,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlayMode {
+    ListLoop,
+    SingleLoop,
+    Shuffle,
+    Sequence,
+}
+
+impl PlayMode {
+    fn label(&self) -> &'static str {
+        match self {
+            PlayMode::ListLoop => "列表循环",
+            PlayMode::SingleLoop => "单曲循环",
+            PlayMode::Shuffle => "随机播放",
+            PlayMode::Sequence => "顺序播放",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            PlayMode::ListLoop => PlayMode::SingleLoop,
+            PlayMode::SingleLoop => PlayMode::Shuffle,
+            PlayMode::Shuffle => PlayMode::Sequence,
+            PlayMode::Sequence => PlayMode::ListLoop,
+        }
+    }
+}
+
 enum View {
     Main,
     PlaylistList,
@@ -85,6 +113,7 @@ enum Msg {
     },
     LyricsReady {
         lines: Vec<LyricLine>,
+        trans: Vec<LyricLine>,
     },
     OpError(String),
     QrKeyReady {
@@ -134,8 +163,10 @@ pub struct App {
     queue_index: usize,
     current: Option<Song>,
     lyrics: Vec<LyricLine>,
+    tlyric: Vec<LyricLine>,
     lyric_index: usize,
     current_song_id: i64,
+    play_mode: PlayMode,
     /// True while the next song's audio is still downloading; prevents the
     /// auto-advance loop from skipping through the queue when the sink is
     /// momentarily empty.
@@ -179,8 +210,10 @@ impl App {
             queue_index: 0,
             current: None,
             lyrics: Vec::new(),
+            tlyric: Vec::new(),
             lyric_index: 0,
             current_song_id: 0,
+            play_mode: PlayMode::ListLoop,
             loading_next: false,
             qr_unikey: None,
             qr_string: None,
@@ -452,6 +485,7 @@ impl App {
         self.current_song_id = song.id;
         self.loading_next = true;
         self.lyrics.clear();
+        self.tlyric.clear();
         self.lyric_index = 0;
         let client = self.client.clone();
         let tx = self.tx.clone();
@@ -466,11 +500,12 @@ impl App {
                         let client = lyric_client.lock().await;
                         let resp = client.lyric(sid).await?;
                         let lrc = resp.lrc.map(|b| b.lyric).unwrap_or_default();
-                        Ok::<_, anyhow::Error>(lyric::parse_lrc(&lrc))
+                        let trc = resp.tlyric.map(|b| b.lyric).unwrap_or_default();
+                        Ok::<_, anyhow::Error>((lyric::parse_lrc(&lrc), lyric::parse_lrc(&trc)))
                     }
                     .await;
-                    if let Ok(lines) = result {
-                        let _ = lyric_tx.send(Msg::LyricsReady { lines });
+                    if let Ok((lines, trans)) = result {
+                        let _ = lyric_tx.send(Msg::LyricsReady { lines, trans });
                     }
                 });
             }
@@ -503,11 +538,38 @@ impl App {
         if self.queue.is_empty() {
             return;
         }
-        if self.queue_index + 1 < self.queue.len() {
-            self.queue_index += 1;
-            self.play_current();
-        } else {
-            self.player.stop();
+        let len = self.queue.len();
+        match self.play_mode {
+            PlayMode::SingleLoop => {
+                self.play_current();
+            }
+            PlayMode::Shuffle => {
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let next = if len == 1 {
+                    0
+                } else {
+                    loop {
+                        let i = rng.gen_range(0..len);
+                        if i != self.queue_index {
+                            break i;
+                        }
+                    }
+                };
+                self.queue_index = next;
+                self.play_current();
+            }
+            _ => {
+                if self.queue_index + 1 < len {
+                    self.queue_index += 1;
+                    self.play_current();
+                } else if self.play_mode == PlayMode::ListLoop {
+                    self.queue_index = 0;
+                    self.play_current();
+                } else {
+                    self.player.stop();
+                }
+            }
         }
     }
 
@@ -519,8 +581,19 @@ impl App {
             self.queue_index -= 1;
             self.play_current();
         } else {
-            self.player.seek(Duration::ZERO);
+            // at first song: restart it, or wrap to last in list-loop mode
+            if self.play_mode == PlayMode::ListLoop {
+                self.queue_index = self.queue.len() - 1;
+                self.play_current();
+            } else {
+                self.player.seek(Duration::ZERO);
+            }
         }
+    }
+
+    fn toggle_play_mode(&mut self) {
+        self.play_mode = self.play_mode.next();
+        self.set_status(format!("播放模式: {}", self.play_mode.label()));
     }
 
     // ---- message handling ----
@@ -568,8 +641,9 @@ impl App {
                     }
                 }
             }
-            Msg::LyricsReady { lines } => {
+            Msg::LyricsReady { lines, trans } => {
                 self.lyrics = lines;
+                self.tlyric = trans;
             }
             Msg::OpError(e) => {
                 self.loading = false;
@@ -778,6 +852,7 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('=') => self.player.volume_up(),
             KeyCode::Char('-') => self.player.volume_down(),
+            KeyCode::Char('m') => self.toggle_play_mode(),
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.pop_view();
             }
@@ -1111,11 +1186,12 @@ impl App {
         frame.render_widget(
             Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title(format!(
-                    "{} / {}  vol: {}%  [{}]",
+                    "{} / {}  vol: {}%  [{}]  [{}]",
                     format_duration(pos),
                     format_duration(total),
                     (self.player.volume() * 100.0) as u32,
-                    state_str(self.player.state())
+                    state_str(self.player.state()),
+                    self.play_mode.label()
                 )))
                 .gauge_style(Style::default().fg(Color::Cyan))
                 .ratio(ratio),
@@ -1130,18 +1206,25 @@ impl App {
             let end = (self.lyric_index + 3).min(self.lyrics.len());
             for i in start..end {
                 let line = &self.lyrics[i];
-                if i == self.lyric_index {
-                    lines.push(Line::from(Span::styled(
-                        line.text.clone(),
+                let is_current = i == self.lyric_index;
+                lines.push(Line::from(Span::styled(
+                    line.text.clone(),
+                    if is_current {
                         Style::default()
                             .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        line.text.clone(),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                )));
+                // translated lyric under the current line (same timestamp)
+                if is_current {
+                    if let Some(tr) = self.tlyric.iter().find(|t| t.time_ms == line.time_ms) {
+                        lines.push(Line::from(Span::styled(
+                            tr.text.clone(),
+                            Style::default().fg(Color::Yellow),
+                        )));
+                    }
                 }
             }
         }
@@ -1154,7 +1237,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(Line::from(
-                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  q 返回",
+                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  m 播放模式  q 返回",
             ))
             .style(Style::default().fg(Color::DarkGray)),
             chunks[3],
