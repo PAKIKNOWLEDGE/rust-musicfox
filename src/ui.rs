@@ -341,7 +341,13 @@ impl App {
             let result = async {
                 let client = client.lock().await;
                 let playlist = client.playlist_detail(id).await?;
-                let songs = playlist.tracks.unwrap_or_default();
+                let mut songs = playlist.tracks.unwrap_or_default();
+                // The detail endpoint truncates `tracks` (often to 10) but
+                // `trackIds` is complete: fetch the full list when truncated.
+                let total = playlist.track_count.unwrap_or(songs.len() as i64) as usize;
+                if songs.len() < total {
+                    songs = client.playlist_all_tracks(id).await?;
+                }
                 Ok::<_, anyhow::Error>((name, songs))
             }
             .await;

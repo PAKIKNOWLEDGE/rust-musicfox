@@ -41,6 +41,9 @@ pub fn data_dir() -> PathBuf {
 
 pub struct NeteaseClient {
     http: Client,
+    /// Dedicated client for large audio downloads: the API client's 30s
+    /// overall timeout would kill slow downloads of multi-MB files.
+    download_http: Client,
     cookies: HashMap<String, String>,
     cookie_path: Option<PathBuf>,
 }
@@ -60,8 +63,15 @@ impl NeteaseClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("build http client")?;
+        let download_http = Client::builder()
+            .user_agent(UA)
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .context("build download client")?;
         Ok(NeteaseClient {
             http,
+            download_http,
             cookies,
             cookie_path,
         })
@@ -72,9 +82,14 @@ impl NeteaseClient {
         self.cookies.contains_key("MUSIC_U")
     }
 
-    /// Clone of the underlying HTTP client (e.g. for audio downloads).
+    /// Clone of the API HTTP client (short requests, 30s cap).
     pub fn http(&self) -> Client {
         self.http.clone()
+    }
+
+    /// Clone of the download HTTP client (large bodies, 5min cap).
+    pub fn download_http(&self) -> Client {
+        self.download_http.clone()
     }
 
     /// Set session cookies from a raw cookie string ("k=v; k2=v2; ...").
@@ -307,12 +322,81 @@ impl NeteaseClient {
     }
 
     pub async fn playlist_detail(&self, id: i64) -> Result<Playlist> {
+        // n/s params are required: without them the API only returns the
+        // first 10 tracks even for playlists with hundreds of songs.
         let body = self
-            .api_get(&format!("/api/v3/playlist/detail?id={}", id))
+            .api_get(&format!("/api/v3/playlist/detail?id={}&n=100000&s=8", id))
             .await?;
         let resp: PlaylistDetailResp =
             serde_json::from_value(body).context("parse playlist detail response")?;
         resp.playlist.ok_or_else(|| anyhow!("playlist not found"))
+    }
+
+    /// Song details for up to 500 ids via the plaintext endpoint.
+    pub async fn song_detail(&self, ids: &[i64]) -> Result<Vec<Song>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids_str = ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = self
+            .api_get(&format!("/api/song/detail?ids=%5B{}%5D", ids_str))
+            .await?;
+        let resp: SongDetailResp =
+            serde_json::from_value(body).context("parse song detail response")?;
+        Ok(resp.songs)
+    }
+
+    /// ALL tracks of a playlist. `playlist/detail` truncates `tracks` (10 in
+    /// practice) but its `trackIds` is complete; we fetch song details in
+    /// concurrent batches of 500 (mirroring go-musicfox's
+    /// PlaylistTrackAllService) and reorder by the track id list.
+    pub async fn playlist_all_tracks(&self, id: i64) -> Result<Vec<Song>> {
+        let playlist = self.playlist_detail(id).await?;
+        let ids: Vec<i64> = playlist.track_ids.iter().map(|t| t.id).collect();
+        if ids.is_empty() {
+            return Ok(playlist.tracks.unwrap_or_default());
+        }
+        let mut by_id: std::collections::HashMap<i64, Song> = std::collections::HashMap::new();
+        let mut set = tokio::task::JoinSet::new();
+        let http = self.http.clone();
+        // The plaintext song/detail endpoint caps at ~201 songs per request,
+        // so batch at 200 (go-musicfox uses 500, but its weapi variant has a
+        // higher cap; 200 keeps us safely under the plaintext limit).
+        for chunk in ids.chunks(200) {
+            let http = http.clone();
+            let ids_str = chunk
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            set.spawn(async move {
+                let url = format!("{}/api/song/detail?ids=%5B{}%5D", BASE, ids_str);
+                let resp = http.get(&url).header(REFERER, BASE).send().await?;
+                let status = resp.status();
+                let text = resp.text().await?;
+                if !status.is_success() || text.is_empty() {
+                    return Err(anyhow!("song detail 请求失败 (status {})", status));
+                }
+                let body: Value = serde_json::from_str(&text)
+                    .with_context(|| format!("parse song detail response (status {})", status))?;
+                let parsed: SongDetailResp =
+                    serde_json::from_value(body).context("parse song detail response")?;
+                Ok::<_, anyhow::Error>(parsed.songs)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok(Ok(songs)) = joined {
+                for s in songs {
+                    by_id.insert(s.id, s);
+                }
+            }
+        }
+        // Reorder to match the playlist's track id order.
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
     pub async fn recommend_songs(&self) -> Result<Vec<Song>> {

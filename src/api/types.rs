@@ -78,6 +78,14 @@ pub struct Playlist {
     pub creator: Option<PlaylistCreator>,
     #[serde(default)]
     pub tracks: Option<Vec<Song>>,
+    /// Full track id list; NOT truncated (unlike `tracks`).
+    #[serde(default, rename = "trackIds")]
+    pub track_ids: Vec<TrackId>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackId {
+    pub id: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -222,6 +230,14 @@ pub struct HighQualityResp {
     pub code: i64,
     #[serde(default)]
     pub playlists: Vec<Playlist>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SongDetailResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub songs: Vec<Song>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
