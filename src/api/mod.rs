@@ -268,6 +268,12 @@ impl NeteaseClient {
         Ok(resp.result)
     }
 
+    pub async fn toplists(&self) -> Result<Vec<ToplistItem>> {
+        let body = self.api_get("/api/toplist").await?;
+        let resp: ToplistResp = serde_json::from_value(body).context("parse toplist response")?;
+        Ok(resp.list)
+    }
+
     pub async fn playlist_detail(&self, id: i64) -> Result<Playlist> {
         let body = self
             .api_get(&format!("/api/v3/playlist/detail?id={}", id))

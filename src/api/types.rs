@@ -208,6 +208,26 @@ pub struct PlaylistDetailResp {
     pub playlist: Option<Playlist>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToplistResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub list: Vec<ToplistItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToplistItem {
+    pub id: i64,
+    pub name: String,
+    #[serde(default, rename = "coverImgUrl")]
+    pub cover_img_url: Option<String>,
+    #[serde(default, rename = "updateFrequency")]
+    pub update_frequency: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Basic API error with the NetEase status code.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {

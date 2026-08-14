@@ -64,6 +64,20 @@ fn main() {
             Err(e) => println!("personalized FAILED: {e}"),
         }
 
+        // 5b) top lists
+        match client.toplists().await {
+            Ok(items) => println!(
+                "toplists OK, {} items: {:?}",
+                items.len(),
+                items
+                    .iter()
+                    .take(3)
+                    .map(|t| t.name.clone())
+                    .collect::<Vec<_>>()
+            ),
+            Err(e) => println!("toplists FAILED: {e}"),
+        }
+
         // 6) playlist detail (云音乐热歌榜 id=3778678)
         match client.playlist_detail(3778678).await {
             Ok(p) => println!(

@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::api::types::{PersonalizedItem, Song};
+use crate::api::types::{PersonalizedItem, Song, ToplistItem};
 use crate::api::NeteaseClient;
 use crate::lyric::{self, LyricLine};
 use crate::player::{PlayState, Player};
@@ -62,6 +62,7 @@ impl PlayMode {
 enum View {
     Main,
     PlaylistList,
+    TopList,
     PlaylistDetail { id: i64, name: String },
     Search,
     Player,
@@ -73,6 +74,7 @@ enum View {
 enum MainItem {
     Daily,
     Personalized,
+    Toplist,
     Search,
     Login,
     Quit,
@@ -83,12 +85,13 @@ impl MainItem {
         match self {
             MainItem::Daily => "每日推荐 (需要登录)",
             MainItem::Personalized => "推荐歌单",
+            MainItem::Toplist => "榜单",
             MainItem::Search => "搜索",
             MainItem::Login => {
                 if logged_in {
                     "退出登录"
                 } else {
-                    "登录 (扫码)"
+                    "登录 (扫码/Cookie)"
                 }
             }
             MainItem::Quit => "退出",
@@ -106,6 +109,9 @@ enum Msg {
     PlaylistListReady {
         items: Vec<PersonalizedItem>,
     },
+    ToplistReady {
+        items: Vec<ToplistItem>,
+    },
     SearchReady {
         songs: Vec<Song>,
     },
@@ -117,6 +123,7 @@ enum Msg {
         lines: Vec<LyricLine>,
         trans: Vec<LyricLine>,
     },
+    DownloadDone(String),
     OpError(String),
     QrKeyReady {
         key: String,
@@ -148,6 +155,11 @@ pub struct App {
     playlists: Vec<PersonalizedItem>,
     playlists_index: usize,
     playlists_loading: bool,
+
+    // top lists ("榜单")
+    toplists: Vec<ToplistItem>,
+    toplists_index: usize,
+    toplists_loading: bool,
 
     // playlist detail / daily recommend
     playlist_songs: Vec<Song>,
@@ -211,6 +223,9 @@ impl App {
             playlists: Vec::new(),
             playlists_index: 0,
             playlists_loading: false,
+            toplists: Vec::new(),
+            toplists_index: 0,
+            toplists_loading: false,
             playlist_songs: Vec::new(),
             playlist_index: 0,
             loading: false,
@@ -339,6 +354,30 @@ impl App {
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::OpError(format!("推荐歌单失败: {}", e)));
+                }
+            }
+        });
+    }
+
+    fn load_toplists(&mut self) {
+        self.toplists.clear();
+        self.toplists_index = 0;
+        self.toplists_loading = true;
+        self.push_view(View::TopList);
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let client = client.lock().await;
+                client.toplists().await
+            }
+            .await;
+            match result {
+                Ok(items) => {
+                    let _ = tx.send(Msg::ToplistReady { items });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::OpError(format!("榜单加载失败: {}", e)));
                 }
             }
         });
@@ -619,6 +658,60 @@ impl App {
         self.set_status(format!("播放模式: {}", self.play_mode.label()));
     }
 
+    fn download_current(&mut self) {
+        let Some(song) = self.current.clone() else {
+            self.set_status("没有正在播放的歌曲");
+            return;
+        };
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let br = self.cfg.br;
+        tokio::spawn(async move {
+            let result = async {
+                let client = client.lock().await;
+                let http = client.http();
+                let url = client.song_url(song.id, br).await?;
+                let resp = http.get(&url).send().await?;
+                let status = resp.status();
+                let bytes = resp.bytes().await?;
+                if !status.is_success() || bytes.is_empty() {
+                    return Err(anyhow!("下载失败: HTTP {}", status));
+                }
+                Ok::<_, anyhow::Error>(bytes.to_vec())
+            }
+            .await;
+            match result {
+                Ok(bytes) => {
+                    let dir = crate::api::data_dir().join("downloads");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let safe: String = song
+                        .name
+                        .chars()
+                        .filter(|c| {
+                            !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                        })
+                        .collect();
+                    let path = dir.join(format!("{} - {}.mp3", song.artist_names(), safe));
+                    match std::fs::write(&path, &bytes) {
+                        Ok(()) => {
+                            let _ = tx.send(Msg::DownloadDone(format!(
+                                "已下载: {} ({} KB)",
+                                path.display(),
+                                bytes.len() / 1024
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Msg::OpError(format!("保存文件失败: {}", e)));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::OpError(format!("下载失败: {}", e)));
+                }
+            }
+        });
+    }
+
     fn persist_volume(&mut self) {
         self.cfg.volume = self.player.volume();
         self.cfg.save();
@@ -647,6 +740,11 @@ impl App {
                 self.playlists = items;
                 self.set_status(format!("共 {} 个歌单", self.playlists.len()));
             }
+            Msg::ToplistReady { items } => {
+                self.toplists_loading = false;
+                self.toplists = items;
+                self.set_status(format!("共 {} 个榜单", self.toplists.len()));
+            }
             Msg::SearchReady { songs } => {
                 self.search_loading = false;
                 self.search_results = songs;
@@ -673,10 +771,14 @@ impl App {
                 self.lyrics = lines;
                 self.tlyric = trans;
             }
+            Msg::DownloadDone(msg) => {
+                self.set_status(msg);
+            }
             Msg::OpError(e) => {
                 self.loading = false;
                 self.search_loading = false;
                 self.playlists_loading = false;
+                self.toplists_loading = false;
                 self.loading_next = false;
                 self.set_status(e);
             }
@@ -733,6 +835,7 @@ impl App {
                 Ok(())
             }
             View::Help => Ok(()),
+            View::TopList => self.handle_toplists_key(key),
         }
     }
 
@@ -742,7 +845,7 @@ impl App {
                 self.main_index = self.main_index.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.main_index = (self.main_index + 1).min(4);
+                self.main_index = (self.main_index + 1).min(5);
             }
             KeyCode::Enter => match self.main_index {
                 0 => {
@@ -753,12 +856,13 @@ impl App {
                     }
                 }
                 1 => self.load_playlists(),
-                2 => {
+                2 => self.load_toplists(),
+                3 => {
                     self.search_input_mode = true;
                     self.push_view(View::Search);
                 }
-                3 => self.enter_login(),
-                4 => {
+                4 => self.enter_login(),
+                5 => {
                     self.quitting = true;
                 }
                 _ => {}
@@ -795,6 +899,29 @@ impl App {
             KeyCode::Esc => {
                 self.pop_view();
                 self.playlists_loading = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_toplists_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.toplists_index = self.toplists_index.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.toplists_index =
+                    (self.toplists_index + 1).min(self.toplists.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.toplists.get(self.toplists_index).cloned() {
+                    self.open_playlist(item.id, item.name);
+                }
+            }
+            KeyCode::Esc => {
+                self.pop_view();
+                self.toplists_loading = false;
             }
             _ => {}
         }
@@ -896,6 +1023,7 @@ impl App {
                 self.persist_volume();
             }
             KeyCode::Char('m') => self.toggle_play_mode(),
+            KeyCode::Char('d') => self.download_current(),
             KeyCode::Char('v') => {
                 self.queue_cursor = self.queue_index;
                 self.push_view(View::Queue);
@@ -1038,6 +1166,7 @@ impl App {
         match &self.view {
             View::Main => self.render_main(frame, areas[0]),
             View::PlaylistList => self.render_playlist_list(frame, areas[0]),
+            View::TopList => self.render_toplists(frame, areas[0]),
             View::PlaylistDetail { .. } => self.render_playlist(frame, areas[0]),
             View::Search => self.render_search(frame, areas[0]),
             View::Player => self.render_player(frame, areas[0]),
@@ -1054,14 +1183,15 @@ impl App {
     }
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4]
+        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4, 5]
             .iter()
             .map(|i| {
                 let item = match i {
                     0 => MainItem::Daily,
                     1 => MainItem::Personalized,
-                    2 => MainItem::Search,
-                    3 => MainItem::Login,
+                    2 => MainItem::Toplist,
+                    3 => MainItem::Search,
+                    4 => MainItem::Login,
                     _ => MainItem::Quit,
                 };
                 ListItem::new(Line::from(Span::styled(
@@ -1080,6 +1210,41 @@ impl App {
             .highlight_symbol("> ");
         let mut state = ratatui::widgets::ListState::default();
         state.select(Some(self.main_index));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn render_toplists(&mut self, frame: &mut Frame, area: Rect) {
+        let title = if self.toplists_loading {
+            "榜单 (加载中...)".to_string()
+        } else {
+            "榜单".to_string()
+        };
+        let items: Vec<ListItem> = self
+            .toplists
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let freq = t
+                    .update_frequency
+                    .clone()
+                    .map(|f| format!("  [{}]", f))
+                    .unwrap_or_default();
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:>3}. ", i + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(t.name.clone()),
+                    Span::styled(freq, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .highlight_symbol("> ");
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.toplists_index));
         frame.render_stateful_widget(list, area, &mut state);
     }
 
@@ -1306,7 +1471,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(Line::from(
-                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  m 播放模式  q 返回",
+                "空格 播放/暂停  s 停止  n/→ 下一首  p/← 上一首  ↑/↓ 快进快退5s  +/- 音量  m 模式  d 下载  v 队列  q 返回",
             ))
             .style(Style::default().fg(Color::DarkGray)),
             chunks[3],
@@ -1383,6 +1548,7 @@ impl App {
             Line::from("  ↑ / ↓           快进 / 快退 5 秒"),
             Line::from("  + / -           音量加减"),
             Line::from("  m               播放模式 (列表循环/单曲/随机/顺序)"),
+            Line::from("  d               下载当前歌曲"),
             Line::from("  v               播放队列"),
             Line::from("  q / Esc         返回"),
             Line::from(""),
