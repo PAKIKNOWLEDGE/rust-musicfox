@@ -7,15 +7,15 @@
 //! they are kept so the types mirror the wire format as features grow.
 #![allow(dead_code)]
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Artist {
     pub id: i64,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Album {
     pub id: i64,
     pub name: String,
@@ -25,7 +25,7 @@ pub struct Album {
     pub artist: Option<Artist>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Song {
     pub id: i64,
     pub name: String,

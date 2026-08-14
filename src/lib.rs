@@ -5,4 +5,5 @@ pub mod api;
 pub mod config;
 pub mod lyric;
 pub mod player;
+pub mod playlist;
 pub mod ui;

@@ -22,6 +22,7 @@ use crate::api::types::{PersonalizedItem, Playlist, Song, ToplistItem};
 use crate::api::NeteaseClient;
 use crate::lyric::{self, LyricLine};
 use crate::player::{PlayState, Player};
+use crate::playlist::{Mode as PlayMode, PlaylistManager};
 
 pub const SONG_BR: u32 = 128000;
 
@@ -29,34 +30,6 @@ pub const SONG_BR: u32 = 128000;
 enum LoginMode {
     Qr,
     Cookie,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlayMode {
-    ListLoop,
-    SingleLoop,
-    Shuffle,
-    Sequence,
-}
-
-impl PlayMode {
-    fn label(&self) -> &'static str {
-        match self {
-            PlayMode::ListLoop => "列表循环",
-            PlayMode::SingleLoop => "单曲循环",
-            PlayMode::Shuffle => "随机播放",
-            PlayMode::Sequence => "顺序播放",
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            PlayMode::ListLoop => PlayMode::SingleLoop,
-            PlayMode::SingleLoop => PlayMode::Shuffle,
-            PlayMode::Shuffle => PlayMode::Sequence,
-            PlayMode::Sequence => PlayMode::ListLoop,
-        }
-    }
 }
 
 enum View {
@@ -219,19 +192,20 @@ pub struct App {
     search_loading: bool,
 
     // player
-    queue: Vec<Song>,
-    queue_index: usize,
+    pm: PlaylistManager,
     queue_cursor: usize,
     current: Option<Song>,
     lyrics: Vec<LyricLine>,
     tlyric: Vec<LyricLine>,
     lyric_index: usize,
     current_song_id: i64,
-    play_mode: PlayMode,
     /// True while the next song's audio is still downloading; prevents the
     /// auto-advance loop from skipping through the queue when the sink is
     /// momentarily empty.
     loading_next: bool,
+    /// Set when the user pressed stop; an in-flight download must not start
+    /// playback until the user plays something manually.
+    stop_requested: bool,
 
     // login
     qr_unikey: Option<String>,
@@ -248,11 +222,14 @@ impl App {
         let logged_in = client.is_logged_in();
         let cfg = crate::config::Config::load().unwrap_or_default();
         player.set_volume(cfg.volume);
-        let play_mode = match cfg.play_mode.as_str() {
-            "single" => PlayMode::SingleLoop,
-            "shuffle" => PlayMode::Shuffle,
-            "sequence" => PlayMode::Sequence,
-            _ => PlayMode::ListLoop,
+        let mut pm = PlaylistManager::new();
+        pm.set_mode(PlayMode::from_key(&cfg.play_mode));
+        // Resume the last session's playlist (songs + index + mode).
+        let restored = pm.load_state();
+        let current_song_id = if restored {
+            pm.current_song().map(|s| s.id).unwrap_or(0)
+        } else {
+            0
         };
         let (tx, rx) = mpsc::unbounded_channel();
         Ok(App {
@@ -286,16 +263,15 @@ impl App {
             search_results: Vec::new(),
             search_index: 0,
             search_loading: false,
-            queue: Vec::new(),
-            queue_index: 0,
+            pm,
             queue_cursor: 0,
             current: None,
             lyrics: Vec::new(),
             tlyric: Vec::new(),
             lyric_index: 0,
-            current_song_id: 0,
-            play_mode,
+            current_song_id,
             loading_next: false,
+            stop_requested: false,
             qr_unikey: None,
             qr_string: None,
             qr_message: String::new(),
@@ -651,13 +627,14 @@ impl App {
         if list.is_empty() {
             return;
         }
-        self.queue = list;
-        self.queue_index = index.min(self.queue.len() - 1);
+        self.stop_requested = false;
+        self.pm.initialize(index, list);
+        self.pm.save_state();
         self.play_current();
     }
 
     fn play_current(&mut self) {
-        let Some(song) = self.queue.get(self.queue_index).cloned() else {
+        let Some(song) = self.pm.current_song() else {
             return;
         };
         self.current = Some(song.clone());
@@ -696,7 +673,7 @@ impl App {
             // download audio
             let result = async {
                 let client = client.lock().await;
-                let http = client.http();
+                let http = client.download_http();
                 let url = client.song_url(song.id, br).await?;
                 let resp = http.get(&url).send().await?;
                 let status = resp.status();
@@ -718,82 +695,49 @@ impl App {
         });
     }
 
-    fn next_song(&mut self) {
-        if self.queue.is_empty() {
+    /// Advance to the next song; `manual` distinguishes user skips (n/p)
+    /// from automatic advance. Saves state on actual transitions.
+    fn next_song(&mut self, manual: bool) {
+        let Some(next) = self.pm.next(manual) else {
+            self.player.stop();
+            return;
+        };
+        // Single-loop auto-repeat: replay in place without re-downloading.
+        if !manual
+            && next == self.pm.current_index().unwrap_or(0)
+            && self.player.state() != PlayState::Stopped
+        {
+            self.player.seek(Duration::ZERO);
+            if self.player.state() == PlayState::Paused {
+                self.player.resume();
+            }
             return;
         }
-        let len = self.queue.len();
-        match self.play_mode {
-            PlayMode::SingleLoop => {
-                if self.player.state() != PlayState::Stopped {
-                    // Replay in place without re-downloading.
-                    self.player.seek(Duration::ZERO);
-                    if self.player.state() == PlayState::Paused {
-                        self.player.resume();
-                    }
-                } else {
-                    self.play_current();
-                }
-            }
-            PlayMode::Shuffle => {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                let next = if len == 1 {
-                    0
-                } else {
-                    loop {
-                        let i = rng.gen_range(0..len);
-                        if i != self.queue_index {
-                            break i;
-                        }
-                    }
-                };
-                self.queue_index = next;
-                self.play_current();
-            }
-            _ => {
-                if self.queue_index + 1 < len {
-                    self.queue_index += 1;
-                    self.play_current();
-                } else if self.play_mode == PlayMode::ListLoop {
-                    self.queue_index = 0;
-                    self.play_current();
-                } else {
-                    self.player.stop();
-                }
-            }
-        }
+        self.stop_requested = false;
+        self.pm.save_state();
+        self.play_current();
     }
 
     fn prev_song(&mut self) {
-        if self.queue.is_empty() {
+        if self.pm.prev(true).is_none() {
+            self.player.seek(Duration::ZERO);
             return;
         }
-        if self.queue_index > 0 {
-            self.queue_index -= 1;
-            self.play_current();
-        } else {
-            // at first song: restart it, or wrap to last in list-loop mode
-            if self.play_mode == PlayMode::ListLoop {
-                self.queue_index = self.queue.len() - 1;
-                self.play_current();
-            } else {
-                self.player.seek(Duration::ZERO);
-            }
-        }
+        self.stop_requested = false;
+        self.pm.save_state();
+        self.play_current();
     }
 
     fn toggle_play_mode(&mut self) {
-        self.play_mode = self.play_mode.next();
-        self.cfg.play_mode = match self.play_mode {
-            PlayMode::ListLoop => "list",
-            PlayMode::SingleLoop => "single",
-            PlayMode::Shuffle => "shuffle",
-            PlayMode::Sequence => "sequence",
-        }
-        .into();
+        let modes = PlayMode::all();
+        let cur = self.pm.mode();
+        let idx = modes.iter().position(|m| *m == cur).unwrap_or(0);
+        let next = modes[(idx + 1) % modes.len()];
+        self.pm.set_mode(next);
+        self.cfg.play_mode = next.as_str().into();
         self.cfg.save();
-        self.set_status(format!("播放模式: {}", self.play_mode.label()));
+        self.pm.save_state();
+        self.set_status(format!("播放模式: {}", next.name()));
     }
 
     fn download_current(&mut self) {
@@ -807,7 +751,7 @@ impl App {
         tokio::spawn(async move {
             let result = async {
                 let client = client.lock().await;
-                let http = client.http();
+                let http = client.download_http();
                 let url = client.song_url(song.id, br).await?;
                 let resp = http.get(&url).send().await?;
                 let status = resp.status();
@@ -921,6 +865,10 @@ impl App {
             }
             Msg::PlaybackReady { song, bytes } => {
                 self.loading_next = false;
+                // Ignore stale downloads: song switched, or user stopped.
+                if self.stop_requested {
+                    return;
+                }
                 if self.current.as_ref().map(|s| s.id) == Some(song.id) {
                     match self.player.play_bytes(bytes) {
                         Ok(()) => {
@@ -1271,19 +1219,26 @@ impl App {
 
     fn handle_player_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char(' ') => self.player.toggle(),
+            KeyCode::Char(' ') => {
+                if self.player.state() == PlayState::Stopped && self.current.is_none() {
+                    // Restart from the current queue position after stop.
+                    if !self.pm.is_empty() {
+                        self.stop_requested = false;
+                        self.play_current();
+                    }
+                } else {
+                    self.player.toggle();
+                }
+            }
             KeyCode::Char('s') => {
                 self.player.stop();
-                // Drop the current song reference so a download that is still
-                // in flight cannot start playback after the user stopped.
-                self.current = None;
-                self.current_song_id = 0;
+                // An in-flight download must not start playback after the
+                // user stopped; keep the queue/current song visible.
+                self.stop_requested = true;
                 self.loading_next = false;
-                self.lyrics.clear();
-                self.tlyric.clear();
                 self.set_status("已停止");
             }
-            KeyCode::Char('n') | KeyCode::Right => self.next_song(),
+            KeyCode::Char('n') | KeyCode::Right => self.next_song(true),
             KeyCode::Char('p') | KeyCode::Left => self.prev_song(),
             KeyCode::Up => self
                 .player
@@ -1304,7 +1259,7 @@ impl App {
             KeyCode::Char('b') => self.toggle_bitrate(),
             KeyCode::Char('d') => self.download_current(),
             KeyCode::Char('v') => {
-                self.queue_cursor = self.queue_index;
+                self.queue_cursor = self.pm.current_index().unwrap_or(0);
                 self.push_view(View::Queue);
             }
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -1321,11 +1276,31 @@ impl App {
                 self.queue_cursor = self.queue_cursor.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.queue_cursor = (self.queue_cursor + 1).min(self.queue.len().saturating_sub(1));
+                self.queue_cursor =
+                    (self.queue_cursor + 1).min(self.pm.playlist().len().saturating_sub(1));
             }
-            KeyCode::Enter if !self.queue.is_empty() => {
-                self.queue_index = self.queue_cursor.min(self.queue.len() - 1);
-                self.play_current();
+            KeyCode::Enter if !self.pm.is_empty() => {
+                let idx = self.queue_cursor.min(self.pm.playlist().len() - 1);
+                let list = self.pm.playlist().to_vec();
+                self.play_at(list, idx);
+            }
+            KeyCode::Char('x') if !self.pm.is_empty() => {
+                let idx = self.queue_cursor.min(self.pm.playlist().len() - 1);
+                let removed = self.pm.playlist()[idx].name.clone();
+                let new_cur = self.pm.remove_song(idx);
+                self.pm.save_state();
+                if self.queue_cursor >= self.pm.playlist().len() && !self.pm.is_empty() {
+                    self.queue_cursor = self.pm.playlist().len() - 1;
+                }
+                if let Some(cur) = new_cur {
+                    self.current = self.pm.playlist().get(cur).cloned();
+                    self.current_song_id = self.current.as_ref().map(|s| s.id).unwrap_or(0);
+                } else {
+                    self.current = None;
+                    self.current_song_id = 0;
+                    self.player.stop();
+                }
+                self.set_status(format!("已从队列移除: {}", removed));
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.pop_view();
@@ -1388,8 +1363,9 @@ impl App {
                 if self.player.state() == PlayState::Playing
                     && self.player.ended()
                     && !self.loading_next
+                    && !self.stop_requested
                 {
-                    self.next_song();
+                    self.next_song(false);
                 }
 
                 // QR polling every 1.2s while on the login page
@@ -1778,7 +1754,7 @@ impl App {
                     format_duration(total),
                     (self.player.volume() * 100.0) as u32,
                     state_str(self.player.state()),
-                    self.play_mode.label()
+                    self.pm.mode().name()
                 )))
                 .gauge_style(Style::default().fg(Color::Cyan))
                 .ratio(ratio),
@@ -1832,12 +1808,14 @@ impl App {
     }
 
     fn render_queue(&mut self, frame: &mut Frame, area: Rect) {
+        let cur_idx = self.pm.current_index();
         let items: Vec<ListItem> = self
-            .queue
+            .pm
+            .playlist()
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let mark = if i == self.queue_index { "▶ " } else { "   " };
+                let mark = if cur_idx == Some(i) { "▶ " } else { "   " };
                 ListItem::new(Line::from(vec![
                     Span::styled(mark, Style::default().fg(Color::Cyan)),
                     Span::styled(
@@ -1856,7 +1834,7 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!("播放队列 ({})", self.queue.len())),
+                    .title(format!("播放队列 ({})", self.pm.playlist().len())),
             )
             .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
             .highlight_symbol("> ");
@@ -1864,7 +1842,7 @@ impl App {
         state.select(Some(self.queue_cursor));
         frame.render_stateful_widget(list, area, &mut state);
         frame.render_widget(
-            Paragraph::new(Line::from("Enter 播放选中  Esc 返回"))
+            Paragraph::new(Line::from("Enter 播放选中  x 移除  Esc 返回"))
                 .style(Style::default().fg(Color::DarkGray)),
             Layout::default()
                 .direction(Direction::Vertical)
@@ -1906,10 +1884,10 @@ impl App {
             Line::from("  p / ←           上一首"),
             Line::from("  ↑ / ↓           快进 / 快退 5 秒"),
             Line::from("  + / -           音量加减"),
-            Line::from("  m               播放模式 (列表循环/单曲/随机/顺序)"),
+            Line::from("  m               播放模式 (列表循环/顺序/单曲/列表随机/无限随机/心动)"),
             Line::from("  b               音质切换 (128k/320k)"),
             Line::from("  d               下载当前歌曲"),
-            Line::from("  v               播放队列"),
+            Line::from("  v               播放队列 (x 移除歌曲)"),
             Line::from("  q / Esc         返回"),
             Line::from(""),
             Line::from(Span::styled(
