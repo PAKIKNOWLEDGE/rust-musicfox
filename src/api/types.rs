@@ -217,6 +217,14 @@ pub struct ToplistResp {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct HighQualityResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub playlists: Vec<Playlist>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ToplistItem {
     pub id: i64,
     pub name: String,

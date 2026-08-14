@@ -274,6 +274,21 @@ impl NeteaseClient {
         Ok(resp.list)
     }
 
+    /// High-quality (精选) playlists for a category; `cat` "全部" or a
+    /// category name such as "华语".
+    pub async fn highquality_playlists(&self, cat: &str, limit: u32) -> Result<Vec<Playlist>> {
+        let body = self
+            .api_get(&format!(
+                "/api/playlist/highquality/list?cat={}&limit={}",
+                urlencoding::encode(cat),
+                limit
+            ))
+            .await?;
+        let resp: HighQualityResp =
+            serde_json::from_value(body).context("parse high quality playlist response")?;
+        Ok(resp.playlists)
+    }
+
     pub async fn playlist_detail(&self, id: i64) -> Result<Playlist> {
         let body = self
             .api_get(&format!("/api/v3/playlist/detail?id={}", id))

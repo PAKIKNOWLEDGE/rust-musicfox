@@ -78,6 +78,20 @@ fn main() {
             Err(e) => println!("toplists FAILED: {e}"),
         }
 
+        // 5c) playlist square (high quality)
+        match client.highquality_playlists("华语", 3).await {
+            Ok(items) => println!(
+                "square OK, {} playlists: {:?}",
+                items.len(),
+                items
+                    .iter()
+                    .take(3)
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+            ),
+            Err(e) => println!("square FAILED: {e}"),
+        }
+
         // 6) playlist detail (云音乐热歌榜 id=3778678)
         match client.playlist_detail(3778678).await {
             Ok(p) => println!(

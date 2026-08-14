@@ -24,6 +24,10 @@ async fn main() -> Result<()> {
             "--cookie" | "-c" => {
                 cookie_arg = args.next();
             }
+            "--version" | "-V" => {
+                println!("rust-musicfox {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!(
                     "rust-musicfox — 网易云音乐 TUI 客户端\n\n\

@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package binary
+        shell: bash
+        run: |
+          cd target/release
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            mv musicfox.exe rust-musicfox-${{ runner.os }}.exe
+          else
+            mv musicfox rust-musicfox-${{ runner.os }}
+            chmod +x rust-musicfox-${{ runner.os }}
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ runner.os }}
+          path: target/release/rust-musicfox-*
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: List artifacts
+        run: find artifacts -type f
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/rust-musicfox-*
+          generate_release_notes: true

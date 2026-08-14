@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::api::types::{PersonalizedItem, Song, ToplistItem};
+use crate::api::types::{PersonalizedItem, Playlist, Song, ToplistItem};
 use crate::api::NeteaseClient;
 use crate::lyric::{self, LyricLine};
 use crate::player::{PlayState, Player};
@@ -62,6 +62,7 @@ impl PlayMode {
 enum View {
     Main,
     PlaylistList,
+    Square,
     TopList,
     PlaylistDetail { id: i64, name: String },
     Search,
@@ -74,6 +75,7 @@ enum View {
 enum MainItem {
     Daily,
     Personalized,
+    Square,
     Toplist,
     Search,
     Login,
@@ -85,6 +87,7 @@ impl MainItem {
         match self {
             MainItem::Daily => "每日推荐 (需要登录)",
             MainItem::Personalized => "推荐歌单",
+            MainItem::Square => "歌单广场",
             MainItem::Toplist => "榜单",
             MainItem::Search => "搜索",
             MainItem::Login => {
@@ -99,6 +102,21 @@ impl MainItem {
     }
 }
 
+/// Popular categories for the playlist square (the category list API is not
+/// exposed through the legacy plain endpoints, so we hardcode popular ones).
+const SQUARE_CATS: [&str; 10] = [
+    "全部",
+    "华语",
+    "欧美",
+    "流行",
+    "摇滚",
+    "民谣",
+    "电子",
+    "轻音乐",
+    "ACG",
+    "怀旧",
+];
+
 /// Messages from spawned network tasks to the main loop.
 enum Msg {
     PlaylistReady {
@@ -111,6 +129,9 @@ enum Msg {
     },
     ToplistReady {
         items: Vec<ToplistItem>,
+    },
+    SquareReady {
+        items: Vec<Playlist>,
     },
     SearchReady {
         songs: Vec<Song>,
@@ -155,6 +176,12 @@ pub struct App {
     playlists: Vec<PersonalizedItem>,
     playlists_index: usize,
     playlists_loading: bool,
+
+    // playlist square ("歌单广场")
+    square_cat_index: usize,
+    square_playlists: Vec<Playlist>,
+    square_index: usize,
+    square_loading: bool,
 
     // top lists ("榜单")
     toplists: Vec<ToplistItem>,
@@ -223,6 +250,10 @@ impl App {
             playlists: Vec::new(),
             playlists_index: 0,
             playlists_loading: false,
+            square_cat_index: 0,
+            square_playlists: Vec::new(),
+            square_index: 0,
+            square_loading: false,
             toplists: Vec::new(),
             toplists_index: 0,
             toplists_loading: false,
@@ -354,6 +385,35 @@ impl App {
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::OpError(format!("推荐歌单失败: {}", e)));
+                }
+            }
+        });
+    }
+
+    fn load_square(&mut self) {
+        self.square_playlists.clear();
+        self.square_index = 0;
+        self.square_loading = true;
+        self.push_view(View::Square);
+        self.fetch_square();
+    }
+
+    fn fetch_square(&mut self) {
+        let cat = SQUARE_CATS[self.square_cat_index].to_string();
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let client = client.lock().await;
+                client.highquality_playlists(&cat, 30).await
+            }
+            .await;
+            match result {
+                Ok(items) => {
+                    let _ = tx.send(Msg::SquareReady { items });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::OpError(format!("歌单广场加载失败: {}", e)));
                 }
             }
         });
@@ -745,6 +805,15 @@ impl App {
                 self.toplists = items;
                 self.set_status(format!("共 {} 个榜单", self.toplists.len()));
             }
+            Msg::SquareReady { items } => {
+                self.square_loading = false;
+                self.square_playlists = items;
+                self.set_status(format!(
+                    "歌单广场 [{}] 共 {} 个精选歌单",
+                    SQUARE_CATS[self.square_cat_index],
+                    self.square_playlists.len()
+                ));
+            }
             Msg::SearchReady { songs } => {
                 self.search_loading = false;
                 self.search_results = songs;
@@ -836,6 +905,7 @@ impl App {
             }
             View::Help => Ok(()),
             View::TopList => self.handle_toplists_key(key),
+            View::Square => self.handle_square_key(key),
         }
     }
 
@@ -845,7 +915,7 @@ impl App {
                 self.main_index = self.main_index.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.main_index = (self.main_index + 1).min(5);
+                self.main_index = (self.main_index + 1).min(6);
             }
             KeyCode::Enter => match self.main_index {
                 0 => {
@@ -856,13 +926,14 @@ impl App {
                     }
                 }
                 1 => self.load_playlists(),
-                2 => self.load_toplists(),
-                3 => {
+                2 => self.load_square(),
+                3 => self.load_toplists(),
+                4 => {
                     self.search_input_mode = true;
                     self.push_view(View::Search);
                 }
-                4 => self.enter_login(),
-                5 => {
+                5 => self.enter_login(),
+                6 => {
                     self.quitting = true;
                 }
                 _ => {}
@@ -899,6 +970,38 @@ impl App {
             KeyCode::Esc => {
                 self.pop_view();
                 self.playlists_loading = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_square_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.square_index = self.square_index.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.square_index =
+                    (self.square_index + 1).min(self.square_playlists.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.square_playlists.get(self.square_index).cloned() {
+                    self.open_playlist(item.id, item.name);
+                }
+            }
+            KeyCode::Char('c') => {
+                self.square_cat_index = (self.square_cat_index + 1) % SQUARE_CATS.len();
+                self.fetch_square();
+            }
+            KeyCode::Char('C') => {
+                self.square_cat_index =
+                    (self.square_cat_index + SQUARE_CATS.len() - 1) % SQUARE_CATS.len();
+                self.fetch_square();
+            }
+            KeyCode::Esc => {
+                self.pop_view();
+                self.square_loading = false;
             }
             _ => {}
         }
@@ -1166,6 +1269,7 @@ impl App {
         match &self.view {
             View::Main => self.render_main(frame, areas[0]),
             View::PlaylistList => self.render_playlist_list(frame, areas[0]),
+            View::Square => self.render_square(frame, areas[0]),
             View::TopList => self.render_toplists(frame, areas[0]),
             View::PlaylistDetail { .. } => self.render_playlist(frame, areas[0]),
             View::Search => self.render_search(frame, areas[0]),
@@ -1183,15 +1287,16 @@ impl App {
     }
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4, 5]
+        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4, 5, 6]
             .iter()
             .map(|i| {
                 let item = match i {
                     0 => MainItem::Daily,
                     1 => MainItem::Personalized,
-                    2 => MainItem::Toplist,
-                    3 => MainItem::Search,
-                    4 => MainItem::Login,
+                    2 => MainItem::Square,
+                    3 => MainItem::Toplist,
+                    4 => MainItem::Search,
+                    5 => MainItem::Login,
                     _ => MainItem::Quit,
                 };
                 ListItem::new(Line::from(Span::styled(
@@ -1210,6 +1315,41 @@ impl App {
             .highlight_symbol("> ");
         let mut state = ratatui::widgets::ListState::default();
         state.select(Some(self.main_index));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn render_square(&mut self, frame: &mut Frame, area: Rect) {
+        let cat = SQUARE_CATS[self.square_cat_index];
+        let title = if self.square_loading {
+            format!("歌单广场 [{}] (加载中...)", cat)
+        } else {
+            format!("歌单广场 [{}]  c 切换分类", cat)
+        };
+        let items: Vec<ListItem> = self
+            .square_playlists
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let plays = p
+                    .play_count
+                    .map(|c| format!("  {}次播放", c))
+                    .unwrap_or_default();
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:>3}. ", i + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(p.name.clone()),
+                    Span::styled(plays, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .highlight_symbol("> ");
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.square_index));
         frame.render_stateful_widget(list, area, &mut state);
     }
 
@@ -1536,6 +1676,12 @@ impl App {
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from("  ?               帮助"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "歌单广场",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  c / C           切换分类 (下一/上一)"),
             Line::from(""),
             Line::from(Span::styled(
                 "播放页",

@@ -1,5 +1,7 @@
 # rust-musicfox
 
+[![CI](https://github.com/PAKIKNOWLEDGE/rust-musicfox/actions/workflows/ci.yml/badge.svg)](https://github.com/PAKIKNOWLEDGE/rust-musicfox/actions/workflows/ci.yml)
+
 网易云音乐终端客户端（TUI），使用 Rust 编写。这是 [go-musicfox](https://github.com/go-musicfox/go-musicfox) 的 Rust 重写版本。
 
 - 纯 Rust 实现，无 CGo / Node 依赖
@@ -11,6 +13,7 @@
 - [x] 扫码登录 + Cookie 粘贴登录（部分网络 weapi 被风控时使用 Cookie 模式）
 - [x] 每日推荐（需登录）
 - [x] 推荐歌单
+- [x] 歌单广场（精选歌单，`c` 切换分类）
 - [x] 榜单（飙升榜/新歌榜/原创榜等 63 个）
 - [x] 搜索（歌曲）
 - [x] 歌单详情 / 播放队列（自动连播，`v` 查看队列）
@@ -21,8 +24,8 @@
 - [x] 退出登录
 - [x] 配置持久化（音量、播放模式、码率，存于 `config.toml`）
 - [x] 帮助页（`?`）
+- [x] 发布流程：打 `v*` tag 自动构建三平台二进制并创建 GitHub Release
 - [ ] 歌词卡拉 OK 模式（YRC）
-- [ ] 歌单广场（分类浏览）
 - [ ] 私人 FM
 - [ ] 桌面歌词、MPRIS / 远程控制、Last.fm
 - [ ] 主题自定义
