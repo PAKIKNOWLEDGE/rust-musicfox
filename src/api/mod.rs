@@ -183,19 +183,59 @@ impl NeteaseClient {
         format!("http://music.163.com/login?codekey={}", key)
     }
 
-    /// Poll QR status. On success (803) the session cookies are captured.
+    /// Poll QR status. Intermediate states (801 waiting / 802 scanned) are
+    /// normal and must NOT be treated as errors, so this bypasses the
+    /// code==200 check of `api_get`. On success (803) the session cookies
+    /// are captured from the body AND from Set-Cookie response headers.
     pub async fn qr_check(&mut self, key: &str) -> Result<QrCheckResp> {
-        let body = self
-            .api_get(&format!(
-                "/api/login/qrcode/client/login?type=1&noCheckToken=true&key={}",
-                urlencoding::encode(key)
-            ))
-            .await?;
-        let resp: QrCheckResp = serde_json::from_value(body).context("parse qr check response")?;
-        if resp.code == 803 {
-            self.merge_cookie_str(&resp.cookie);
+        let url = format!(
+            "{}/api/login/qrcode/client/login?type=1&noCheckToken=true&key={}",
+            BASE,
+            urlencoding::encode(key)
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header(REFERER, BASE)
+            .header(COOKIE, self.cookie_header())
+            .send()
+            .await
+            .with_context(|| format!("request failed: {}", url))?;
+        let status = resp.status();
+        // Collect Set-Cookie headers before consuming the body.
+        let set_cookies: Vec<String> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+            .collect();
+        let text = resp
+            .text()
+            .await
+            .with_context(|| format!("read qr check response (status {})", status))?;
+        if text.is_empty() {
+            return Err(anyhow!(
+                "empty qr check response (status {}), 可能被风控拦截",
+                status
+            ));
         }
-        Ok(resp)
+        let body: Value = serde_json::from_str(&text).context("parse qr check response")?;
+        let mut parsed: QrCheckResp =
+            serde_json::from_value(body).context("parse qr check response")?;
+        if parsed.code == 803 {
+            self.merge_cookie_str(&parsed.cookie);
+            // Some endpoints deliver the session via Set-Cookie headers only.
+            for cookie in &set_cookies {
+                self.merge_cookie_str(cookie);
+            }
+        }
+        // Normalize: 801/802 are pending states, not errors.
+        parsed.message = match parsed.code {
+            801 => "等待扫码".into(),
+            802 => "已扫码，请在手机上确认".into(),
+            _ => parsed.message,
+        };
+        Ok(parsed)
     }
 
     // ---- content (legacy plain API) ----
@@ -240,6 +280,27 @@ impl NeteaseClient {
         let resp: HighQualityResp =
             serde_json::from_value(body).context("parse high quality playlist response")?;
         Ok(resp.playlists)
+    }
+
+    /// Current account profile (login required); None when logged out.
+    pub async fn account_profile(&self) -> Result<Option<Profile>> {
+        let body = self.api_get("/api/nuser/account/get").await?;
+        let resp: AccountGetResp =
+            serde_json::from_value(body).context("parse account response")?;
+        Ok(resp.profile)
+    }
+
+    /// Playlists created/collected by a user.
+    pub async fn user_playlists(&self, uid: i64, limit: u32) -> Result<Vec<Playlist>> {
+        let body = self
+            .api_get(&format!(
+                "/api/user/playlist?uid={}&limit={}&offset=0",
+                uid, limit
+            ))
+            .await?;
+        let resp: UserPlaylistResp =
+            serde_json::from_value(body).context("parse user playlist response")?;
+        Ok(resp.playlist)
     }
 
     pub async fn playlist_detail(&self, id: i64) -> Result<Playlist> {

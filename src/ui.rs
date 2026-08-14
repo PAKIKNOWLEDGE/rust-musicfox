@@ -62,6 +62,7 @@ impl PlayMode {
 enum View {
     Main,
     PlaylistList,
+    MyPlaylists,
     Square,
     TopList,
     PlaylistDetail { id: i64, name: String },
@@ -75,6 +76,7 @@ enum View {
 enum MainItem {
     Daily,
     Personalized,
+    MyPlaylists,
     Square,
     Toplist,
     Search,
@@ -87,6 +89,7 @@ impl MainItem {
         match self {
             MainItem::Daily => "每日推荐 (需要登录)",
             MainItem::Personalized => "推荐歌单",
+            MainItem::MyPlaylists => "我的歌单 (需要登录)",
             MainItem::Square => "歌单广场",
             MainItem::Toplist => "榜单",
             MainItem::Search => "搜索",
@@ -126,6 +129,10 @@ enum Msg {
     },
     PlaylistListReady {
         items: Vec<PersonalizedItem>,
+    },
+    MyPlaylistsReady {
+        nickname: String,
+        playlists: Vec<Playlist>,
     },
     ToplistReady {
         items: Vec<ToplistItem>,
@@ -176,6 +183,11 @@ pub struct App {
     playlists: Vec<PersonalizedItem>,
     playlists_index: usize,
     playlists_loading: bool,
+
+    // my playlists ("我的歌单")
+    my_playlists: Vec<Playlist>,
+    my_playlists_index: usize,
+    my_playlists_loading: bool,
 
     // playlist square ("歌单广场")
     square_cat_index: usize,
@@ -250,6 +262,9 @@ impl App {
             playlists: Vec::new(),
             playlists_index: 0,
             playlists_loading: false,
+            my_playlists: Vec::new(),
+            my_playlists_index: 0,
+            my_playlists_loading: false,
             square_cat_index: 0,
             square_playlists: Vec::new(),
             square_index: 0,
@@ -385,6 +400,42 @@ impl App {
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::OpError(format!("推荐歌单失败: {}", e)));
+                }
+            }
+        });
+    }
+
+    fn load_my_playlists(&mut self) {
+        if !self.logged_in {
+            self.set_status("请先登录");
+            return;
+        }
+        self.my_playlists.clear();
+        self.my_playlists_index = 0;
+        self.my_playlists_loading = true;
+        self.push_view(View::MyPlaylists);
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let client = client.lock().await;
+                let profile = client
+                    .account_profile()
+                    .await?
+                    .ok_or_else(|| anyhow!("无法获取账号信息，登录可能已过期，请重新登录"))?;
+                let playlists = client.user_playlists(profile.user_id, 100).await?;
+                Ok::<_, anyhow::Error>((profile.nickname, playlists))
+            }
+            .await;
+            match result {
+                Ok((nickname, playlists)) => {
+                    let _ = tx.send(Msg::MyPlaylistsReady {
+                        nickname,
+                        playlists,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::OpError(format!("我的歌单加载失败: {}", e)));
                 }
             }
         });
@@ -813,6 +864,18 @@ impl App {
                 self.playlists = items;
                 self.set_status(format!("共 {} 个歌单", self.playlists.len()));
             }
+            Msg::MyPlaylistsReady {
+                nickname,
+                playlists,
+            } => {
+                self.my_playlists_loading = false;
+                self.my_playlists = playlists;
+                self.set_status(format!(
+                    "{} 的歌单，共 {} 个",
+                    nickname,
+                    self.my_playlists.len()
+                ));
+            }
             Msg::ToplistReady { items } => {
                 self.toplists_loading = false;
                 self.toplists = items;
@@ -919,6 +982,7 @@ impl App {
             View::Help => Ok(()),
             View::TopList => self.handle_toplists_key(key),
             View::Square => self.handle_square_key(key),
+            View::MyPlaylists => self.handle_my_playlists_key(key),
         }
     }
 
@@ -928,7 +992,7 @@ impl App {
                 self.main_index = self.main_index.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.main_index = (self.main_index + 1).min(6);
+                self.main_index = (self.main_index + 1).min(7);
             }
             KeyCode::Enter => match self.main_index {
                 0 => {
@@ -939,14 +1003,15 @@ impl App {
                     }
                 }
                 1 => self.load_playlists(),
-                2 => self.load_square(),
-                3 => self.load_toplists(),
-                4 => {
+                2 => self.load_my_playlists(),
+                3 => self.load_square(),
+                4 => self.load_toplists(),
+                5 => {
                     self.search_input_mode = true;
                     self.push_view(View::Search);
                 }
-                5 => self.enter_login(),
-                6 => {
+                6 => self.enter_login(),
+                7 => {
                     self.quitting = true;
                 }
                 _ => {}
@@ -983,6 +1048,29 @@ impl App {
             KeyCode::Esc => {
                 self.pop_view();
                 self.playlists_loading = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_my_playlists_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.my_playlists_index = self.my_playlists_index.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.my_playlists_index =
+                    (self.my_playlists_index + 1).min(self.my_playlists.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.my_playlists.get(self.my_playlists_index).cloned() {
+                    self.open_playlist(item.id, item.name);
+                }
+            }
+            KeyCode::Esc => {
+                self.pop_view();
+                self.my_playlists_loading = false;
             }
             _ => {}
         }
@@ -1283,6 +1371,7 @@ impl App {
         match &self.view {
             View::Main => self.render_main(frame, areas[0]),
             View::PlaylistList => self.render_playlist_list(frame, areas[0]),
+            View::MyPlaylists => self.render_my_playlists(frame, areas[0]),
             View::Square => self.render_square(frame, areas[0]),
             View::TopList => self.render_toplists(frame, areas[0]),
             View::PlaylistDetail { .. } => self.render_playlist(frame, areas[0]),
@@ -1301,16 +1390,17 @@ impl App {
     }
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4, 5, 6]
+        let items: Vec<ListItem> = [0usize, 1, 2, 3, 4, 5, 6, 7]
             .iter()
             .map(|i| {
                 let item = match i {
                     0 => MainItem::Daily,
                     1 => MainItem::Personalized,
-                    2 => MainItem::Square,
-                    3 => MainItem::Toplist,
-                    4 => MainItem::Search,
-                    5 => MainItem::Login,
+                    2 => MainItem::MyPlaylists,
+                    3 => MainItem::Square,
+                    4 => MainItem::Toplist,
+                    5 => MainItem::Search,
+                    6 => MainItem::Login,
                     _ => MainItem::Quit,
                 };
                 ListItem::new(Line::from(Span::styled(
@@ -1329,6 +1419,41 @@ impl App {
             .highlight_symbol("> ");
         let mut state = ratatui::widgets::ListState::default();
         state.select(Some(self.main_index));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn render_my_playlists(&mut self, frame: &mut Frame, area: Rect) {
+        let title = if self.my_playlists_loading {
+            "我的歌单 (加载中...)".to_string()
+        } else {
+            "我的歌单".to_string()
+        };
+        let items: Vec<ListItem> = self
+            .my_playlists
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let info = format!(
+                    "  {}首 / {}次播放",
+                    p.track_count.unwrap_or(0),
+                    p.play_count.unwrap_or(0)
+                );
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:>3}. ", i + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(p.name.clone()),
+                    Span::styled(info, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .highlight_symbol("> ");
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.my_playlists_index));
         frame.render_stateful_widget(list, area, &mut state);
     }
 

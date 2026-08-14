@@ -225,6 +225,36 @@ pub struct HighQualityResp {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct AccountGetResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub account: Option<serde_json::Value>,
+    #[serde(default)]
+    pub profile: Option<Profile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Profile {
+    #[serde(default, rename = "userId")]
+    pub user_id: i64,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default, rename = "avatarUrl")]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserPlaylistResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub more: bool,
+    #[serde(default)]
+    pub playlist: Vec<Playlist>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ToplistItem {
     pub id: i64,
     pub name: String,
