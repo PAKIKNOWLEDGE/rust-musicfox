@@ -7,6 +7,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# GITHUB_TOKEN needs write access to create releases and upload assets
+# (new repos default to read-only).
+permissions:
+  contents: write
+
 jobs:
   build:
     name: build (${{ matrix.os }})
