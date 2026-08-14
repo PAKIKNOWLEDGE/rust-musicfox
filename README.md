@@ -87,8 +87,9 @@ nix profile install ./result
 
 两种方式，应用内登录页按 `q`/`c` 切换：
 
-- **扫码登录（`q`）**：需要网络能直连网易云 `weapi` 接口。部分网络（特别是走了代理/特定出口 IP 时）会被网易云风控拦截 `/weapi/` 路径，此时二维码无法加载——这是网络层拦截，与客户端无关（真实浏览器同样被拦）。
-- **Cookie 登录（`c`，推荐）**：任何网络都可用。
+- **扫码登录（`q`，推荐）**：走明文 `/api/login/qrcode/*` 接口，不依赖 weapi，
+  绝大多数网络可用。用手机网易云音乐 App 扫码即可。
+- **Cookie 登录（`c`）**：任何网络都可用，适合扫码异常时备用。
   1. 浏览器打开 https://music.163.com 并登录
   2. F12 → 应用程序(Application) → Cookie → `https://music.163.com`
   3. 复制 `MUSIC_U` 的值，写入 `<config>/rust-musicfox/cookie.txt`

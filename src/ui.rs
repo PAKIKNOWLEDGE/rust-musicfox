@@ -148,6 +148,9 @@ enum Msg {
         bytes: Vec<u8>,
     },
     LyricsReady {
+        /// Song id the lyrics belong to; guards against stale lyrics
+        /// arriving after a quick song switch.
+        song_id: i64,
         lines: Vec<LyricLine>,
         trans: Vec<LyricLine>,
     },
@@ -160,6 +163,9 @@ enum Msg {
     QrStatus {
         code: i64,
         message: String,
+    },
+    LoginVerified {
+        nickname: String,
     },
     CookieLoginOk,
     LoggedOut,
@@ -673,7 +679,11 @@ impl App {
                     }
                     .await;
                     if let Ok((lines, trans)) = result {
-                        let _ = lyric_tx.send(Msg::LyricsReady { lines, trans });
+                        let _ = lyric_tx.send(Msg::LyricsReady {
+                            song_id: sid,
+                            lines,
+                            trans,
+                        });
                     }
                 });
             }
@@ -709,7 +719,15 @@ impl App {
         let len = self.queue.len();
         match self.play_mode {
             PlayMode::SingleLoop => {
-                self.play_current();
+                if self.player.state() != PlayState::Stopped {
+                    // Replay in place without re-downloading.
+                    self.player.seek(Duration::ZERO);
+                    if self.player.state() == PlayState::Paused {
+                        self.player.resume();
+                    }
+                } else {
+                    self.play_current();
+                }
             }
             PlayMode::Shuffle => {
                 use rand::Rng;
@@ -912,9 +930,16 @@ impl App {
                     }
                 }
             }
-            Msg::LyricsReady { lines, trans } => {
-                self.lyrics = lines;
-                self.tlyric = trans;
+            Msg::LyricsReady {
+                song_id,
+                lines,
+                trans,
+            } => {
+                // Ignore lyrics that raced in from a previous song.
+                if song_id == self.current_song_id {
+                    self.lyrics = lines;
+                    self.tlyric = trans;
+                }
             }
             Msg::DownloadDone(msg) => {
                 self.set_status(msg);
@@ -934,9 +959,33 @@ impl App {
             }
             Msg::QrStatus { code, message } => {
                 if code == 803 {
-                    self.logged_in = true;
-                    self.set_status("登录成功");
-                    self.pop_view();
+                    // Verify the session actually took effect (the plaintext
+                    // endpoint may not always deliver the MUSIC_U cookie).
+                    self.qr_message = "已扫码，正在确认登录...".into();
+                    let client = self.client.clone();
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        let result = async {
+                            let client = client.lock().await;
+                            client.account_profile().await
+                        }
+                        .await;
+                        match result {
+                            Ok(Some(profile)) => {
+                                let _ = tx.send(Msg::LoginVerified {
+                                    nickname: profile.nickname,
+                                });
+                            }
+                            Ok(None) => {
+                                let _ = tx.send(Msg::OpError(
+                                    "登录未生效（未获取到账号信息），请改用 Cookie 登录".into(),
+                                ));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Msg::OpError(format!("登录确认失败: {}", e)));
+                            }
+                        }
+                    });
                 } else if code == 800 {
                     self.qr_message = "二维码已过期，正在刷新...".into();
                     self.refresh_qr();
@@ -944,10 +993,19 @@ impl App {
                     self.qr_message = message;
                 }
             }
+            Msg::LoginVerified { nickname } => {
+                self.logged_in = true;
+                self.set_status(format!("登录成功: {}", nickname));
+                if matches!(self.view, View::Login) {
+                    self.pop_view();
+                }
+            }
             Msg::CookieLoginOk => {
                 self.logged_in = true;
                 self.set_status("登录成功 (cookie)");
-                self.pop_view();
+                if matches!(self.view, View::Login) {
+                    self.pop_view();
+                }
             }
             Msg::LoggedOut => {
                 self.logged_in = false;
@@ -1208,7 +1266,17 @@ impl App {
     fn handle_player_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Char(' ') => self.player.toggle(),
-            KeyCode::Char('s') => self.player.stop(),
+            KeyCode::Char('s') => {
+                self.player.stop();
+                // Drop the current song reference so a download that is still
+                // in flight cannot start playback after the user stopped.
+                self.current = None;
+                self.current_song_id = 0;
+                self.loading_next = false;
+                self.lyrics.clear();
+                self.tlyric.clear();
+                self.set_status("已停止");
+            }
             KeyCode::Char('n') | KeyCode::Right => self.next_song(),
             KeyCode::Char('p') | KeyCode::Left => self.prev_song(),
             KeyCode::Up => self
@@ -1663,7 +1731,7 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
-                Constraint::Length(1),
+                Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Min(3),
             ])

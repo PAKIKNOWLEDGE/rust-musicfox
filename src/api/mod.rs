@@ -1,11 +1,14 @@
 //! NetEase Cloud Music API client.
 //!
-//! Content endpoints (search, playlists, song URLs, lyrics) use the legacy
-//! plain-GET API which is reliable and needs no request encryption. Login
-//! supports two channels:
+//! All endpoints use the PLAINTEXT legacy API under `/api/`, which is
+//! reliable on networks where the `/weapi/` paths are blocked by anti-bot
+//! (empty 200 responses). QR login works the same way: the plaintext
+//! `/api/login/qrcode/*` endpoints replace go-musicfox's weapi variants, so
+//! no weapi encryption or TLS fingerprint impersonation is needed.
 //!
-//! - QR login through the weapi endpoints (best effort; some networks block
-//!   these with anti-bot 302/empty responses),
+//! Login supports two channels:
+//!
+//! - QR scan (plaintext endpoints, works on most networks),
 //! - cookie paste: the user provides the `MUSIC_U` session cookie from their
 //!   browser, which works on any network.
 //!

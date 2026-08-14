@@ -101,13 +101,22 @@ fn main() {
             Err(e) => println!("playlist FAILED: {e}"),
         }
 
-        // 7) QR key (new endpoint + full browser headers, mirroring go-musicfox)
+        // 7) QR key (plaintext endpoints, mirroring the app's QR login)
         match client.qr_key().await {
             Ok(key) => {
                 println!("qr_key OK: {key}");
                 println!("qr_url: {}", client.qr_url(&key));
             }
             Err(e) => println!("qr_key FAILED: {e}"),
+        }
+
+        // 8) account profile (should be None when logged out)
+        match client.account_profile().await {
+            Ok(p) => match p {
+                Some(profile) => println!("account OK (logged in): {}", profile.nickname),
+                None => println!("account OK (logged out, profile is None)"),
+            },
+            Err(e) => println!("account FAILED: {e}"),
         }
     });
 }

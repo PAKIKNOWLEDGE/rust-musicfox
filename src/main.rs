@@ -21,9 +21,13 @@ async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--cookie" | "-c" => {
-                cookie_arg = args.next();
-            }
+            "--cookie" | "-c" => match args.next() {
+                Some(v) => cookie_arg = Some(v),
+                None => {
+                    eprintln!("--cookie 需要一个 cookie 字符串，例如: --cookie \"MUSIC_U=xxxx\"");
+                    std::process::exit(2);
+                }
+            },
             "--version" | "-V" => {
                 println!("rust-musicfox {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -34,7 +38,7 @@ async fn main() -> Result<()> {
                      用法: musicfox [--cookie \"k=v; k2=v2\"]\n\
                      \n\
                      登录方式:\n  \
-                     1. 应用内扫码登录（部分网络不可用）\n  \
+                     1. 应用内扫码登录（推荐）\n  \
                      2. 应用内 Cookie 登录：将浏览器 MUSIC_U cookie 写入\n     \
                      {} 后按 r\n  \
                      3. 命令行: musicfox --cookie \"MUSIC_U=xxxx\"",
