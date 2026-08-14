@@ -142,6 +142,12 @@ UI 线程模型：单主任务持有播放器并负责渲染；按键事件由�
 - 存储：JSON cookie + TOML 配置替代 BoltDB
 - 未实现：远程控制（MPRIS 等）、频谱、主题系统、Last.fm 同步
 
+## 相关项目
+
+- [go-musicfox](https://github.com/go-musicfox/go-musicfox) — 本项目重写的原版（Go + bubbletea）
+- [akirco/pigma](https://github.com/akirco/pigma) — Ratatui 构建的网易云音乐 TUI 客户端
+- [professor-lee/CNMPlayer](https://github.com/professor-lee/CNMPlayer) — 带音频可视化的网易云 TUI 播放器
+
 ## License
 
 [MIT](LICENSE)
