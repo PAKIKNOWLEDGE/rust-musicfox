@@ -1,61 +1,35 @@
 {
+  description = "rust-musicfox — NetEase Cloud Music TUI client written in Rust";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    devenv.url = "github:cachix/devenv";
-    nix2container.url = "github:nlewo/nix2container";
-    nix2container.inputs.nixpkgs.follows = "nixpkgs";
-    mk-shell-bin.url = "github:rrbutani/nix-mk-shell-bin";
-    mission-control.url = "github:Platonic-Systems/mission-control";
-    flake-root.url = "github:srid/flake-root";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = inputs@{ flake-parts, nixpkgs, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        inputs.devenv.flakeModule
-        inputs.flake-root.flakeModule
-        inputs.mission-control.flakeModule
-        inputs.flake-parts.flakeModules.easyOverlay
-      ];
-      systems = nixpkgs.lib.systems.flakeExposed;
-      perSystem = { config, self', inputs', pkgs, system, final, ... }: {
-        mission-control.scripts = {
-          run = {
-            description = "Run app";
-            exec = "go run ./cmd/musicfox.go";
-            category = "Dev Tools";
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "rust-musicfox";
+          version = "0.1.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          meta = {
+            description = "NetEase Cloud Music TUI client written in Rust";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "musicfox";
           };
         };
 
-        packages.default = pkgs.callPackage ./deploy/nix { };
-        overlayAttrs = {
-          inherit (config.packages) go-musicfox;
+        apps.default = flake-utils.lib.mkApp {
+          drv = self.packages.${system}.default;
         };
-        packages.go-musicfox = pkgs.callPackage ./deploy/nix { };
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [
-            config.flake-root.devShell
-            config.mission-control.devShell
-            self'.devShells.my-shell
-          ];
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-          ];
-          buildInputs = with pkgs;[
-            alsa-lib
-            flac
-          ];
+          packages = with pkgs; [ cargo rustc rustfmt clippy ];
         };
-        devenv.shells.my-shell = {
-          languages.go = {
-            enable = true;
-          };
-          enterShell = ''
-            echo $'\e[1;32mWelcome to go-musicfox project~\e[0m'
-          '';
-        };
-      };
-    };
+      });
 }

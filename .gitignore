@@ -1,15 +1,2 @@
-.idea/
-.Ds_Store
-.DS_Store
-bin/
-dist/
-.release-env
-go.work
-go.work.sum
-.devenv/
-.envrc
-result/
-coverage.txt
-musicfox
-__debug*
-.slim/
+/target
+**/*.rs.bk
